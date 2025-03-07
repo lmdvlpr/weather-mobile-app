@@ -1,74 +1,206 @@
-import { Image, StyleSheet, Platform } from 'react-native';
+import React, { useEffect, useState } from 'react'
+import {
+  View,
+  Text,
+  ActivityIndicator,
+  TextInput,
+  Button,
+  Image,
+  StyleSheet,
+  ScrollView,
+} from 'react-native'
+import { useUserLocation } from '../../hooks/useUserLocation'
+import { fetchWeather, fetchWeatherForecast } from '../../services/fetchWeather'
+import * as TaskManager from 'expo-task-manager'
+import * as Location from 'expo-location'
+import { Header } from '@/components/Header'
 
-import { HelloWave } from '@/components/HelloWave';
-import ParallaxScrollView from '@/components/ParallaxScrollView';
-import { ThemedText } from '@/components/ThemedText';
-import { ThemedView } from '@/components/ThemedView';
+interface WeatherData {
+  name: string
+  weather: { icon: string; description: string }[]
+  main: { temp: number }
+}
+
+interface ForecastData {
+  dayOfWeek: string
+  date: string
+  icon: string
+  temp: number
+}
+
+const LOCATION_TASK_NAME = 'background-location-task'
+
+TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
+  if (error) {
+    console.error(error)
+    return
+  }
+  if (data && typeof data === 'object' && 'locations' in data) {
+    const locations = data.locations as Location.LocationObject[]
+    if (locations.length > 0) {
+      const { latitude, longitude } = locations[0].coords
+      console.log('Background location:', latitude, longitude)
+    }
+  }
+})
 
 export default function HomeScreen() {
+  const { location, error } = useUserLocation()
+  const [weather, setWeather] = useState<WeatherData | null>(null)
+  const [forecast, setForecast] = useState<ForecastData[]>([])
+  const [city, setCity] = useState('')
+
+  useEffect(() => {
+    if (location) {
+      fetchWeather(location.lat, location.lon).then(setWeather)
+      fetchWeatherForecast(location.lat, location.lon).then(setForecast)
+    }
+  }, [location])
+
+  useEffect(() => {
+    let isMounted = true
+    ;(async () => {
+      try {
+        const { status } = await Location.requestBackgroundPermissionsAsync()
+        if (status === 'granted' && isMounted) {
+          await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 60000, // Atualiza a cada 60 segundos
+            distanceInterval: 50, // Atualiza a cada 50 metros
+          })
+        } else {
+          console.error('Permissão de localização não concedida')
+        }
+      } catch (error) {
+        console.error('Failed to start location updates:', error)
+      }
+    })()
+    return () => {
+      isMounted = false
+      Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME)
+    }
+  }, [])
+
+  const searchWeather = async () => {
+    if (!city) return
+    try {
+      const locationData = await Location.geocodeAsync(city)
+      let data: WeatherData | null = null
+      let forecastData: ForecastData[] = []
+      if (locationData.length > 0) {
+        const { latitude, longitude } = locationData[0]
+        data = await fetchWeather(latitude, longitude)
+        forecastData = await fetchWeatherForecast(latitude, longitude)
+      } else {
+        console.error('Failed to get location data for the city')
+      }
+      setWeather(data)
+      setForecast(forecastData)
+    } catch (error) {
+      console.error('Failed to fetch weather data:', error)
+    }
+  }
+
+  if (error) return <Text style={styles.error}>{error}</Text>
+  if (!location || !weather) return <ActivityIndicator size='large' />
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
+    <View style={styles.container}>
+      <Header />
+      <View style={styles.searchContainer}>
+        <TextInput
+          value={city}
+          onChangeText={setCity}
+          placeholder='Digite uma cidade'
+          style={styles.input}
         />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12'
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-        <ThemedText>
-          Tap the Explore tab to learn more about what's included in this starter app.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          When you're ready, run{' '}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
-  );
+        <Button
+          title='Buscar'
+          onPress={searchWeather}
+        />
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.title}>{weather.name}</Text>
+        <Image
+          source={{
+            uri: `https://openweathermap.org/img/wn/${weather.weather[0].icon}@2x.png`,
+          }}
+          style={styles.icon}
+        />
+        <Text style={styles.temp}>{weather.main.temp.toFixed(0)}°C</Text>
+        <Text style={styles.desc}>{weather.weather[0].description}</Text>
+      </View>
+
+      <ScrollView
+        style={styles.forecastContainer}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+      >
+        {forecast.map((day, index) => (
+          <View
+            key={index}
+            style={styles.forecastCard}
+          >
+            <Text>{day.dayOfWeek}</Text>
+            <Text>{day.date}</Text>
+            <Image
+              source={{
+                uri: `https://openweathermap.org/img/wn/${day.icon}@2x.png`,
+              }}
+              style={styles.icon}
+            />
+            <Text>{day.temp.toFixed(0)}°C</Text>
+          </View>
+        ))}
+      </ScrollView>
+    </View>
+  )
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
+  container: {
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
-    gap: 8,
+    backgroundColor: '#3f3f46',
+    paddingTop: 30,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  searchContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  input: {
+    backgroundColor: 'white',
+    padding: 8,
+    borderRadius: 5,
+    width: '60%',
+    marginRight: 10,
   },
-});
+  card: {
+    padding: 20,
+    borderRadius: 15,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    marginBottom: 20,
+  },
+  title: { fontSize: 24, fontWeight: 'bold', color: 'white' },
+  temp: { fontSize: 40, color: 'white' },
+  desc: { fontSize: 18, textTransform: 'capitalize', color: 'white' },
+  error: { color: 'red', textAlign: 'center', marginTop: 20 },
+  icon: { width: 100, height: 100 },
+  forecastContainer: {
+    width: '100%',
+  },
+  forecastCard: {
+    padding: 10,
+    margin: 5,
+    alignItems: 'center',
+    backgroundColor: 'rgba(194, 186, 186, 0.88)',
+    borderRadius: 10,
+    width: 120,
+    height: 180,
+  },
+})
